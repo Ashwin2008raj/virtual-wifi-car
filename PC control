@@ -1,89 +1,41 @@
 import cv2
-import numpy as np
-import socket
-import time
 import mediapipe as mp
+import paho.mqtt.client as mqtt
 
-# ESP32 IP and Port
-ESP32_IP = "192.168.4.1"  # Or use local network IP
-ESP32_PORT = 80
+broker_ip = "localhost"  # or your PC's IP
+client = mqtt.Client()
+client.connect(broker_ip, 1883, 60)
 
-# Setup TCP connection
-client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-try:
-    client.connect((ESP32_IP, ESP32_PORT))
-    print("Connected to ESP32")
-except Exception as e:
-    print("Connection Error:", e)
-    exit()
-
-# Hand tracking setup
-mpHands = mp.solutions.hands
-hands = mpHands.Hands()
-mpDraw = mp.solutions.drawing_utils
-
-# Control states
-lastCommand = ""
-speed = 150
-
-# Capture from webcam
+mp_hands = mp.solutions.hands.Hands()
 cap = cv2.VideoCapture(0)
 
-def send_command(cmd):
-    global lastCommand
-    if cmd != lastCommand:
-        client.send((cmd + "\n").encode())
-        print("Sent:", cmd)
-        lastCommand = cmd
+def get_command(landmarks):
+    if landmarks:
+        if landmarks[8].y < landmarks[6].y:
+            return "forward"
+        elif landmarks[4].x < landmarks[3].x:
+            return "left"
+        elif landmarks[4].x > landmarks[3].x:
+            return "right"
+    return "stop"
 
 while True:
-    success, img = cap.read()
-    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = hands.process(imgRGB)
-
-    h, w, _ = img.shape
-    command = "S"
-
-    if results.multi_hand_landmarks:
-        for handLms in results.multi_hand_landmarks:
-            lmList = []
-            for id, lm in enumerate(handLms.landmark):
-                cx, cy = int(lm.x * w), int(lm.y * h)
-                lmList.append((cx, cy))
-
-            # Distance between thumb and index finger
-            x1, y1 = lmList[4]
-            x2, y2 = lmList[8]
-            length = int(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
-
-            # Map distance to speed
-            speed = min(max(int(np.interp(length, [20, 200], [0, 255])), 0), 255)
-            send_command(f"S{speed}")
-
-            # Direction logic (based on finger position)
-            if lmList[8][1] < lmList[6][1]:  # Index pointing up
-                command = "F"
-            elif lmList[8][1] > lmList[10][1]:  # Pointing down
-                command = "B"
-            elif lmList[4][0] > lmList[8][0]:  # Left
-                command = "L"
-            elif lmList[4][0] < lmList[8][0]:  # Right
-                command = "R"
-            else:
-                command = "S"
-
-            send_command(command)
-
-            mpDraw.draw_landmarks(img, handLms, mpHands.HAND_CONNECTIONS)
-
-    # Display info
-    cv2.putText(img, f"Speed: {speed}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-    cv2.imshow("Ashwini Controller", img)
-
-    if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
+    ret, frame = cap.read()
+    if not ret:
         break
 
-# Cleanup
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = mp_hands.process(image)
+
+    if results.multi_hand_landmarks:
+        lm = results.multi_hand_landmarks[0].landmark
+        cmd = get_command(lm)
+        client.publish("car/control", cmd)
+        print("Command:", cmd)
+
+    cv2.imshow("Gesture", frame)
+    if cv2.waitKey(1) == ord('q'):
+        break
+
 cap.release()
 cv2.destroyAllWindows()
-client.close()
