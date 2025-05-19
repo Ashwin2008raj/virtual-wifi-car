@@ -1,118 +1,60 @@
 #include <WiFi.h>
+#include <PubSubClient.h>
 
-// Wi-Fi credentials
-const char* ssid = "YOUR_WIFI_SSID";
+const char* ssid = "YOUR_WIFI_NAME";
 const char* password = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "192.168.x.x";  // PC's IP address
 
-WiFiServer server(80);
-WiFiClient client;
+WiFiClient espClient;
+PubSubClient client(espClient);
 
-// Motor driver pins (adjust if needed)
-const int IN1 = 14;  // Right Motor
-const int IN2 = 27;
-const int IN3 = 26;  // Left Motor
-const int IN4 = 25;
+int m1a = 18, m1b = 19, m2a = 23, m2b = 22;
 
-const int ENA = 33;  // PWM Right
-const int ENB = 32;  // PWM Left
+void setup_wifi() {
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+}
+
+void callback(char* topic, byte* message, unsigned int length) {
+  String cmd;
+  for (int i = 0; i < length; i++) cmd += (char)message[i];
+  
+  if (cmd == "forward") {
+    digitalWrite(m1a, HIGH); digitalWrite(m1b, LOW);
+    digitalWrite(m2a, HIGH); digitalWrite(m2b, LOW);
+  } else if (cmd == "left") {
+    digitalWrite(m1a, LOW); digitalWrite(m1b, HIGH);
+    digitalWrite(m2a, HIGH); digitalWrite(m2b, LOW);
+  } else if (cmd == "right") {
+    digitalWrite(m1a, HIGH); digitalWrite(m1b, LOW);
+    digitalWrite(m2a, LOW); digitalWrite(m2b, HIGH);
+  } else {
+    digitalWrite(m1a, LOW); digitalWrite(m1b, LOW);
+    digitalWrite(m2a, LOW); digitalWrite(m2b, LOW);
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    if (client.connect("ESP32Client")) {
+      client.subscribe("car/control");
+    } else {
+      delay(1000);
+    }
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-
-  // Set motor pins as output
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
-  pinMode(ENA, OUTPUT);
-  pinMode(ENB, OUTPUT);
-
-  // Connect to Wi-Fi
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("\nConnected to WiFi");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  server.begin();
+  pinMode(m1a, OUTPUT); pinMode(m1b, OUTPUT);
+  pinMode(m2a, OUTPUT); pinMode(m2b, OUTPUT);
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
 }
 
 void loop() {
-  if (!client || !client.connected()) {
-    client = server.available();
-    return;
-  }
-
-  if (client.available()) {
-    String command = client.readStringUntil('\n');
-    command.trim();
-    Serial.println("Received: " + command);
-
-    int speed = 150; // Default speed
-    if (command.startsWith("S")) {  // Speed command
-      speed = command.substring(1).toInt();
-    }
-
-    // Motor directions
-    if (command.indexOf("F") >= 0) {
-      moveForward(speed);
-    } else if (command.indexOf("B") >= 0) {
-      moveBackward(speed);
-    } else if (command.indexOf("L") >= 0) {
-      turnLeft(speed);
-    } else if (command.indexOf("R") >= 0) {
-      turnRight(speed);
-    } else if (command.indexOf("S") >= 0) {
-      stopMotors();
-    }
-  }
+  if (!client.connected()) reconnect();
+  client.loop();
 }
 
-void moveForward(int spd) {
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-  analogWrite(ENA, spd);
-  analogWrite(ENB, spd);
-}
-
-void moveBackward(int spd) {
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-  analogWrite(ENA, spd);
-  analogWrite(ENB, spd);
-}
-
-void turnLeft(int spd) {
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-  analogWrite(ENA, spd);
-  analogWrite(ENB, spd);
-}
-
-void turnRight(int spd) {
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-  analogWrite(ENA, spd);
-  analogWrite(ENB, spd);
-}
-
-void stopMotors() {
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-}
