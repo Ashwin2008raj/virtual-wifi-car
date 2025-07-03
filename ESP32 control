@@ -1,60 +1,139 @@
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include "esp_wifi.h"  // For setting custom MAC
 
-const char* ssid = "YOUR_WIFI_NAME";
-const char* password = "YOUR_WIFI_PASSWORD";
-const char* mqtt_server = "192.168.x.x";  // PC's IP address
+// Wi-Fi credentials (change as needed)
+const char* ssid = "ASHWINRAJ";
+const char* password = "ashwin raj";
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+// Static IP
+IPAddress local_IP(192, 168, 1, 184);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
 
-int m1a = 18, m1b = 19, m2a = 23, m2b = 22;
+// WiFi server
+WiFiServer server(80);
 
-void setup_wifi() {
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-}
+// Motor control pins (L298N)
+int rightMotorPin1 = 25;
+int rightMotorPin2 = 33;
+int leftMotorPin1  = 32;
+int leftMotorPin2  = 4;
 
-void callback(char* topic, byte* message, unsigned int length) {
-  String cmd;
-  for (int i = 0; i < length; i++) cmd += (char)message[i];
-  
-  if (cmd == "forward") {
-    digitalWrite(m1a, HIGH); digitalWrite(m1b, LOW);
-    digitalWrite(m2a, HIGH); digitalWrite(m2b, LOW);
-  } else if (cmd == "left") {
-    digitalWrite(m1a, LOW); digitalWrite(m1b, HIGH);
-    digitalWrite(m2a, HIGH); digitalWrite(m2b, LOW);
-  } else if (cmd == "right") {
-    digitalWrite(m1a, HIGH); digitalWrite(m1b, LOW);
-    digitalWrite(m2a, LOW); digitalWrite(m2b, HIGH);
-  } else {
-    digitalWrite(m1a, LOW); digitalWrite(m1b, LOW);
-    digitalWrite(m2a, LOW); digitalWrite(m2b, LOW);
-  }
-}
+// LED pin for feedback
+const int ledPin = 2;
 
-void reconnect() {
-  while (!client.connected()) {
-    if (client.connect("ESP32Client")) {
-      client.subscribe("car/control");
-    } else {
-      delay(1000);
-    }
-  }
-}
+// Safety auto-stop
+unsigned long lastCommandTime = 0;
+const unsigned long commandTimeout = 1000;  // 1 second
 
 void setup() {
   Serial.begin(115200);
-  pinMode(m1a, OUTPUT); pinMode(m1b, OUTPUT);
-  pinMode(m2a, OUTPUT); pinMode(m2b, OUTPUT);
-  setup_wifi();
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(callback);
+
+  // Motor and LED pin setup
+  pinMode(rightMotorPin1, OUTPUT);
+  pinMode(rightMotorPin2, OUTPUT);
+  pinMode(leftMotorPin1, OUTPUT);
+  pinMode(leftMotorPin2, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+
+  // Optional: Set fixed MAC (for routers like JioFi)
+  uint8_t customMAC[6] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01 };
+  esp_wifi_set_mac(WIFI_IF_STA, customMAC);
+
+  // WiFi config
+  WiFi.mode(WIFI_STA);
+  WiFi.config(local_IP, gateway, subnet);
+  WiFi.begin(ssid, password);
+
+  Serial.println("🔌 Connecting to WiFi...");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Connected!");
+    Serial.print("📶 IP Address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("🔍 MAC Address: ");
+    Serial.println(WiFi.macAddress());
+    server.begin();
+    blinkLED(3);  // Show boot success
+  } else {
+    Serial.println("\n❌ Failed to connect. Rebooting...");
+    delay(3000);
+    ESP.restart();
+  }
+
+  lastCommandTime = millis();
 }
 
 void loop() {
-  if (!client.connected()) reconnect();
-  client.loop();
+  // Reboot if WiFi disconnected
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("❌ WiFi lost. Rebooting...");
+    delay(1000);
+    ESP.restart();
+  }
+
+  WiFiClient client = server.available();
+  if (client) {
+    String command = client.readStringUntil('\n');
+    command.trim();
+
+    if (command.length() > 0) {
+      Serial.println("📥 Command: " + command);
+      blinkLED(1);  // Blink for each command
+
+      if (command == "STOP") stopMotors();
+      else if (command == "FORWARD") moveForward();
+      else if (command == "BACK") moveBackward();
+      else if (command == "LEFT") turnLeft();
+      else if (command == "RIGHT") turnRight();
+
+      lastCommandTime = millis();
+    }
+  }
+
+  // Auto-stop for safety
+  if (millis() - lastCommandTime > commandTimeout) {
+    stopMotors();
+  }
 }
 
+// === MOTOR FUNCTIONS ===
+void stopMotors() {
+  digitalWrite(rightMotorPin1, LOW); digitalWrite(rightMotorPin2, LOW);
+  digitalWrite(leftMotorPin1, LOW);  digitalWrite(leftMotorPin2, LOW);
+}
+
+void moveForward() {
+  digitalWrite(rightMotorPin1, HIGH); digitalWrite(rightMotorPin2, LOW);
+  digitalWrite(leftMotorPin1, HIGH);  digitalWrite(leftMotorPin2, LOW);
+}
+
+void moveBackward() {
+  digitalWrite(rightMotorPin1, LOW); digitalWrite(rightMotorPin2, HIGH);
+  digitalWrite(leftMotorPin1, LOW);  digitalWrite(leftMotorPin2, HIGH);
+}
+
+void turnLeft() {
+  // Turn Left = Right wheels ON, Left wheels OFF
+  digitalWrite(leftMotorPin1, LOW);  digitalWrite(leftMotorPin2, LOW);
+  digitalWrite(rightMotorPin1, HIGH); digitalWrite(rightMotorPin2, LOW);
+}
+
+void turnRight() {
+  // Turn Right = Left wheels ON, Right wheels OFF
+  digitalWrite(rightMotorPin1, LOW); digitalWrite(rightMotorPin2, LOW);
+  digitalWrite(leftMotorPin1, HIGH); digitalWrite(leftMotorPin2, LOW);
+}
+
+void blinkLED(int times) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(ledPin, HIGH); delay(100);
+    digitalWrite(ledPin, LOW);  delay(100);
+  }
+}
